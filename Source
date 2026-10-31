@@ -1,0 +1,583 @@
+FUNCTION zta_essmss_pf_loan .
+*"----------------------------------------------------------------------
+*"*"Local Interface:
+*"  IMPORTING
+*"     VALUE(IM_INT_APP_FLAG) TYPE  BOOLE_D OPTIONAL
+*"     VALUE(IM_W_R) TYPE  BOOLE_D OPTIONAL
+*"     VALUE(IM_APP_ID) TYPE  ZHR_ESS_WF_MASTR-WFID OPTIONAL
+*"     VALUE(IM_EMP_NO) TYPE  PERNR_D OPTIONAL
+*"     VALUE(IM_WITHDRAWREASON) TYPE  ZHR_ESSMSS_PFLON-ZLOAN_TYPE
+*"       OPTIONAL
+*"     VALUE(IM_WFST) TYPE  ZTA_ESS_PF_MAIN-ZSTATUS_ID OPTIONAL
+*"  EXPORTING
+*"     VALUE(EX_FLAG) TYPE  CHAR1
+*"     VALUE(EX_ERRORMESSAGE) TYPE  CHAR100
+*"     VALUE(ET_PF_SUMMARY) TYPE  ZTA_T_PF_SUMMARY
+*"  TABLES
+*"      ET_PFLOAN_TYPE STRUCTURE  ZTA_ESS_PF_LTYPE OPTIONAL
+*"      ET_PF_LOAN TYPE  ZTA_ESS_PF_T OPTIONAL
+*"      ET_PFMEM_HIS TYPE  ZTA_T_PFMEM_HIS OPTIONAL
+*"----------------------------------------------------------------------
+  " display the loans available - 19.10.2026
+  " user applies for the loan - 20.10.2026
+
+  IF im_int_app_flag = 'I'
+     AND im_w_r = 'D'.
+
+    SELECT *
+      FROM zta_ess_pf_ltype
+      INTO TABLE  gt_pfloan_type.
+
+    IF sy-subrc = 0.
+      ex_flag = 'S'.
+      ex_errormessage = 'Loan type is found'.
+
+      et_pfloan_type[] = gt_pfloan_type[].
+
+    ELSE.
+      ex_flag = 'E'.
+      ex_errormessage = 'Loan type is not available'.
+    ENDIF.
+
+  ELSEIF im_int_app_flag = 'I' AND im_w_r = 'P'.
+    SELECT *
+    FROM zta_pfmem_his_k
+    INTO TABLE gt_pfmem_his_k "et_pfmem_his
+    WHERE pernr = im_emp_no.
+    IF sy-subrc = 0.
+      ex_flag = 'S'.
+      ex_errormessage = 'Previous membership is found'.
+      LOOP AT gt_pfmem_his_k INTO gs_pfmem_his_k.
+        MOVE-CORRESPONDING gs_pfmem_his_k TO gs_pfmem_his.
+        APPEND gs_pfmem_his TO et_pfmem_his.
+      ENDLOOP.
+    ELSE.
+
+      ex_flag = 'E'.
+      ex_errormessage = 'Previous membership not found'.
+    ENDIF.
+*    PERFORM previous_membership.
+  ELSEIF im_int_app_flag = 'I' AND im_w_r = 'E'.
+    gv_flag = 'E'.
+    PERFORM loan_check USING im_emp_no im_withdrawreason
+                       CHANGING ex_flag
+                                ex_errormessage.
+    IF ex_flag NE 'E'.
+      ex_flag = 'S'.
+    ENDIF.
+
+  ELSEIF  im_int_app_flag = 'O' AND im_w_r = 'W'.
+
+    CLEAR: gs_pf_ess_main,
+           gs_pf_ess_txn,
+           gv_unique_id.
+    LOOP AT et_pf_loan INTO gs_pf_ess_s.
+      MOVE-CORRESPONDING gs_pf_ess_s TO gs_pf_ess_main.
+    ENDLOOP.
+    lv_req_amt = gs_pf_ess_main-zloan_amt.
+*    gv_flag = 'E'.  " to be removed once check condition completed
+    PERFORM loan_check USING im_emp_no gs_pf_ess_main-zloan_type
+                       CHANGING ex_flag
+                                ex_errormessage.
+    IF ex_flag NE 'E'.
+*    PERFORM balance_amount USING im_emp_no.
+*    IF sy-subrc <> 0.  " if no error
+
+      SELECT SINGLE * FROM  zta_ess_pf_ltype INTO gs_pfloan_type  WHERE zloan_type = gs_pf_ess_s-zloan_type.
+      IF sy-subrc IS INITIAL.
+        gs_pf_ess_main-zloan_type_desc = gs_pfloan_type-zloan_type_desc.
+      ENDIF.
+      IF gs_pf_ess_main-zappln_no IS INITIAL OR gs_pf_ess_main-zappln_no EQ '0000000000'.
+        " generate the new application
+
+        CALL FUNCTION 'NUMBER_GET_NEXT'
+          EXPORTING
+            nr_range_nr = '01'
+            object      = 'ZHR_ESS_PF'
+          IMPORTING
+            number      = gv_unique_id.
+        gs_pf_ess_main-zcreated_by  = gs_pf_ess_main-zchanged_by.
+        gs_pf_ess_main-zappln_no = gv_unique_id.
+        gs_pf_ess_main-zcreated_date  = sy-datum.
+        gs_pf_ess_main-zcreated_time  = sy-uzeit.
+        gs_pf_ess_txn-zchanged_by    = gs_pf_ess_main-zcreated_by.
+      ELSE.
+        gv_unique_id = gs_pf_ess_main-zappln_no.
+        gs_pf_ess_txn-zstatus_id = gs_pf_ess_main-zstatus_id.
+        gs_pf_ess_txn-zchanged_by    = gs_pf_ess_main-zchanged_by.
+        gs_pf_ess_txn-zremarks = gs_pf_ess_main-zremarks.
+        gs_main1-zstatus       = gs_pf_ess_main-zstatus.
+        CLEAR gs_pf_ess_main.
+        SELECT SINGLE * FROM zta_ess_pf_main INTO gs_pf_ess_main WHERE zappln_no = gv_unique_id.
+        gs_pf_ess_main-zstatus_id = gs_pf_ess_txn-zstatus_id.
+        gs_pf_ess_main-zchanged_by  = gs_pf_ess_txn-zchanged_by.
+        gs_pf_ess_main-zremarks      = gs_pf_ess_txn-zremarks.
+        gs_pf_ess_main-zstatus      = gs_main1-zstatus .
+      ENDIF.
+      IF gs_pf_ess_main-zstatus_id = '99'.
+        "Ajay Please write the code here and send message flag 'S' or 'E' and  success message or error message
+        gs_pf_ess_main-zpayment_date = sy-datum.  " to be confirmed the date as user input or approved date
+      ENDIF.
+      APPEND gs_pf_ess_main  TO gt_main .
+      MODIFY zta_ess_pf_main FROM TABLE gt_main.  " to be correctedgs_pf_ess_main
+      COMMIT WORK.
+
+      gs_pf_ess_txn-zappln_no = gs_pf_ess_main-zappln_no.
+      gs_pf_ess_txn-zstatus_id = gs_pf_ess_main-zstatus_id.
+      gs_pf_ess_txn-zchanged_date  = sy-datum.
+      gs_pf_ess_txn-zchanged_time  = sy-uzeit.
+      gs_pf_ess_txn-zremarks = gs_pf_ess_main-zremarks.
+
+      MODIFY zta_ess_pf_txn FROM gs_pf_ess_txn.
+      COMMIT WORK.
+      IF sy-subrc IS INITIAL.
+        ex_flag = 'S'.
+        CASE gs_pf_ess_main-zstatus_id.
+
+          WHEN '01'.
+            ex_errormessage = 'PF Loan Submitted Successfully '.
+          WHEN '02'.
+            ex_errormessage =  'Level 1 Approver Approved Pending with Final Approver. ' .
+          WHEN '99'.
+            ex_errormessage =  'PF Loan approved.' .
+        ENDCASE.
+      ENDIF.
+
+*    ENDIF.
+    ENDIF.
+
+  ELSEIF  im_int_app_flag = 'I'  AND im_w_r = 'R'.
+
+    CLEAR et_pf_loan[].
+
+    SELECT * FROM zta_ess_pf_main INTO TABLE gt_pf_ess_main
+     WHERE zcreated_by = im_emp_no
+       AND zloan_type  = im_withdrawreason
+       AND ( zstatus_id   = '01'
+       OR    zstatus_id   = '02' ).
+
+    IF sy-subrc = 0.
+
+      LOOP AT gt_pf_ess_main INTO gs_pf_ess_main.
+        MOVE-CORRESPONDING gs_pf_ess_main TO gs_pf_ess_s.
+        APPEND gs_pf_ess_s  TO et_pf_loan.
+      ENDLOOP.
+
+      ex_flag = 'S'.
+      ex_errormessage = 'Pending request found'.
+
+    ELSE.
+      ex_flag = 'E'.
+      ex_errormessage = 'No pending PF Loan request'.
+    ENDIF.
+
+  ELSEIF  im_int_app_flag = 'I'  AND im_w_r = 'H'.
+
+    CLEAR et_pf_loan[].
+
+    SELECT * FROM zta_ess_pf_main INTO TABLE gt_pf_ess_main
+     WHERE pernr = im_emp_no
+       AND zstatus_id   = '99'.
+
+    IF sy-subrc = 0.
+
+      LOOP AT gt_pf_ess_main INTO gs_pf_ess_main.
+        MOVE-CORRESPONDING gs_pf_ess_main TO gs_pf_ess_s.
+        APPEND gs_pf_ess_s  TO et_pf_loan.
+      ENDLOOP..
+
+      ex_flag = 'S'.
+      ex_errormessage = 'Approved PF Loan Request'.
+
+    ELSE.
+      ex_flag = 'E'.
+      ex_errormessage = 'No Approved PF Loan request'.
+    ENDIF.
+
+  ELSEIF im_int_app_flag = 'A'.
+
+    CLEAR et_pf_loan[].
+
+    CASE im_w_r.
+      WHEN 'A' OR 'J'.
+        SELECT DISTINCT
+           a~pernr,
+           a~zappln_no,
+           a~zloan_type,
+           a~zloan_type_desc,
+           a~zcreated_date,
+           a~zcreated_time,
+           a~zcreated_by,
+           a~zpayment_date,
+           a~zloan_amt,
+           a~zstatus_id,
+           a~zstatus,
+           b~zremarks,
+           b~zchanged_by,
+           a~zloan_amt
+          FROM zta_ess_pf_main AS a
+          INNER JOIN zta_ess_pf_txn AS b
+          ON b~zappln_no = a~zappln_no
+          INTO CORRESPONDING FIELDS OF TABLE @gt_pf_ess_s
+          WHERE b~zstatus_id = @im_wfst
+          AND   b~zchanged_by = @im_emp_no.
+
+        "Approved ET_PF_LOAN
+
+      WHEN 'R'.
+        SELECT * FROM zta_ess_pf_main INTO CORRESPONDING FIELDS OF TABLE gt_pf_ess_s
+          WHERE zstatus_id = im_wfst.
+
+    ENDCASE.
+
+    SELECT persa name1 FROM t500p INTO TABLE gt_persa.
+    SELECT pernr sname persg persk werks FROM pa0001 INTO TABLE gt_name WHERE endda EQ '99991231'.
+
+    LOOP AT gt_pf_ess_s INTO gs_pf_ess_s.
+      READ TABLE gt_name INTO gs_name WITH KEY pernr = gs_pf_ess_s-pernr.
+      gs_pf_ess_s-emp_name = gs_name-name.
+*      READ TABLE gt_hrp INTO gs_hrp WITH KEY obj = gs_vis_aid-orgid.
+*      gs_pf_ess_s- org_text = gs_hrp-stxt.
+      READ TABLE gt_persa INTO gs_persa WITH KEY persa = gs_name-werks.
+      gs_pf_ess_s-persa_text = gs_persa-name1.
+      APPEND gs_pf_ess_s TO et_pf_loan.
+      CLEAR gs_pf_ess_s.
+    ENDLOOP.
+
+*    SORT et_pf_loan BY zcreated_date DESCENDING
+*                       zcreated_time DESCENDING.
+
+  ENDIF.
+
+
+
+ENDFUNCTION.
+
+
+FORM loan_check USING    p_emp_no TYPE pernr_d
+                         p_wd_reason TYPE zhr_essmss_pflon-zloan_type
+                CHANGING p_flag   TYPE char1
+                         p_message TYPE char100.
+
+
+  SELECT SINGLE * FROM zta_ess_pf_ltype INTO gs_pf_loan_type WHERE zloan_type =  p_wd_reason.
+
+* 1)Employee 12 months membership either previous or current company (Member has not completed 12 months of EPF membership.)
+
+  CALL FUNCTION 'ZHR_HR_READ_INFOTYPE'
+    EXPORTING
+      ex_pernr = p_emp_no
+      ex_infty = '0041'
+      ex_begda = sy-datum
+      ex_endda = sy-datum
+    IMPORTING
+      im_p0041 = lt_p0041.
+
+  READ TABLE lt_p0041 INTO ls_p0041 WITH  KEY zdatety = 'Z2'.
+
+
+  CALL FUNCTION 'FIMA_DAYS_AND_MONTHS_AND_YEARS'
+    EXPORTING
+      i_date_from = ls_p0041-zdate
+      i_date_to   = sy-datum
+    IMPORTING
+      e_months    = lv_months.
+  IF lv_months LT gs_pf_loan_type-zwd_elig_months .
+    SELECT *
+  FROM zta_pfmem_his_k
+  INTO TABLE gt_pfmem_his_k
+  WHERE pernr = p_emp_no.
+    LOOP AT gt_pfmem_his_k INTO gs_pfmem_his_k.
+      lv_months = lv_months + gs_pfmem_his_k-zno_of_months.
+    ENDLOOP.
+    IF lv_months LT gs_pf_loan_type-zwd_elig_months ..
+      p_flag = 'E'.
+      CONCATENATE 'Loan minimum eligible months - ' gs_pf_loan_type-zwd_elig_months 'Not serviced in PSU' INTO p_message SEPARATED BY space.
+    ENDIF.
+  ENDIF.
+
+
+***********************************************************************************************
+*check  2)Max Limit check (Maximum number of withdrawals permitted under this category has already been
+*exhausted.)
+*if Special Circum - (Only two withdrawals are permitted under Special Circumstances in a financial
+*year)
+************************************************************************************************
+
+  CLEAR: lv_wd_count,lv_fy_start.
+
+  " with the witdrawal reason match with the loan type
+
+
+  IF p_flag NE 'E'.
+
+
+    IF gs_pf_loan_type-zloan_type = 'SP'.
+      lv_d = sy-datum.
+      IF lv_d+4(2) LT 3.
+        gv_check_mon = lv_d+0(4) - 1.
+      ELSE.
+        gv_check_mon = lv_d+0(4).
+      ENDIF.
+      CONCATENATE gv_check_mon '0401' INTO gv_check_mon.
+      CONDENSE gv_check_mon NO-GAPS.
+      lv_fy_start =  gv_check_mon.
+
+
+      SELECT COUNT( * ) FROM zta_ess_pf_main
+      INTO lv_wd_count WHERE pernr = p_emp_no
+          AND zloan_type =  'SP'
+           AND ( zstatus_id = '99' OR zstatus_id = '01' OR zstatus_id = '02' )
+      AND zpayment_date >= lv_fy_start
+     AND zpayment_date <= sy-datum.
+
+      IF lv_wd_count >= gs_pf_loan_type-zmax_wd_limit.  "2.
+        p_flag = 'E'.
+        CONCATENATE 'Maximum' gs_pf_loan_type-zmax_wd_limit 'withdrwals permitted for special circumstances' INTO p_message SEPARATED BY space.
+      ENDIF.
+
+    ELSE.
+
+      IF gs_pf_loan_type-zmax_wd_limit IS NOT INITIAL.
+
+        SELECT COUNT( * ) FROM zta_ess_pf_main INTO lv_wd_count WHERE pernr = p_emp_no
+                          AND zloan_type =  p_wd_reason
+        AND ( zstatus_id = '99' OR zstatus_id = '01' OR zstatus_id = '02' ).
+
+        IF lv_wd_count >= gs_pf_loan_type-zmax_wd_limit.
+          p_flag = 'E'.
+          p_message = 'Maximum  withdrwals permitted for these categories are exhausted'.
+        ENDIF.
+
+
+      ENDIF.
+
+    ENDIF.
+
+
+*--------------------------------------------------------------------*
+* CHECK 3)Minimum withdrawal amount (Minimum withdrawal amount shall be ₹1,000.)
+*--------------------------------------------------------------------*
+    IF p_flag NE 'E'.
+      IF gv_flag NE 'E'.
+        IF gs_pf_ess_main-zloan_amt < gs_pf_loan_type-zmin_wd_amt.
+          p_flag = 'E'.
+          p_message = gs_pf_loan_type-zmin_wd_amt .
+          CONCATENATE 'Minimum withdrawal amount shall be INR ' p_message INTO p_message SEPARATED BY space.
+        ELSE.
+          PERFORM balance_amount USING p_emp_no.
+          gs_final-bal_tot = 0 - gs_final-bal_tot.
+          lv_elig_amt = 75 * gs_final-bal_tot / 100 .
+          IF gs_pf_main-zloan_amt GT lv_elig_amt.
+            p_flag = 'E'.
+            p_message = lv_elig_amt .
+            CONCATENATE 'Manxmum withdrawal amount shall be INR ' p_message INTO p_message SEPARATED BY space.
+          ENDIF.
+        ENDIF.
+      ENDIF.
+    ENDIF.
+  ENDIF.
+
+****************************************************************************************************************
+*4)Requested amount > Eligible Member Balance (Requested amount exceeds the Eligible Member Balance)
+****************************************************************************************************************
+  IF p_flag NE 'E'..
+    IF gv_flag NE 'E'.
+      lv_elig_amt = lv_elig_amt * gs_pf_loan_type-zloan_percentage / 100.
+
+      IF lv_req_amt IS INITIAL OR lv_req_amt <= 0.
+
+        p_flag = 'E'.
+        p_message = 'please enter the valid amount'.
+
+      ELSEIF lv_elig_amt <= 0.
+
+        p_flag = 'E'.
+        p_message = 'eligible member balnce is insufficient'.
+      ELSEIF lv_req_amt < lv_min_amt.
+
+        p_flag = 'E'.
+        p_message = 'Requested amount is below the minimum withdrawal amount'.
+
+      ELSEIF lv_req_amt > lv_elig_amt.
+
+        p_flag = 'E'.
+        p_message = 'Requested amount exceeds the eligible member balance '.
+
+      ENDIF.
+
+      p_flag = 'S'.
+      p_message = 'employee is eligilbe for pf withdrawals'.
+
+    ENDIF.
+  ENDIF.
+
+ENDFORM.
+
+
+FORM balance_amount USING p_emp_no TYPE pernr_d.
+
+  SELECT *
+    FROM zta_t_hrmast
+    INTO TABLE gt_zta_t_hrmast
+    WHERE pernr = p_emp_no
+      AND lifnr = p_emp_no.
+
+  LOOP AT gt_zta_t_hrmast INTO gs_t_hrmast.
+
+    CLEAR: vendor,
+           gt_bsik[],
+           gs_final.
+
+    CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
+      EXPORTING
+        input  = gs_t_hrmast-lifnr
+      IMPORTING
+        output = vendor.
+
+  ENDLOOP.
+
+  SELECT *
+    FROM bsik
+    INTO TABLE gt_bsik
+    WHERE lifnr = vendor
+      AND bukrs = 'PF01'.
+
+  LOOP AT gt_bsik INTO gs_bsik.
+
+    CASE gs_bsik-hkont.
+
+      WHEN '0000117000'.
+        IF gs_bsik-shkzg = 'H'.
+          gs_final-bal_amt =
+            gs_final-bal_amt + gs_bsik-dmbtr * -1.
+        ELSE.
+          gs_final-bal_amt =
+            gs_final-bal_amt + gs_bsik-dmbtr.
+        ENDIF.
+
+      WHEN '0000117003'.
+        IF gs_bsik-shkzg = 'H'.
+          gs_final-bal_amt =
+            gs_final-bal_amt + gs_bsik-dmbtr * -1.
+        ELSE.
+          gs_final-bal_amt =
+            gs_final-bal_amt + gs_bsik-dmbtr.
+        ENDIF.
+
+      WHEN '0000117004'.
+        IF gs_bsik-shkzg = 'H'.
+          gs_final-bal_amt =
+            gs_final-bal_amt + gs_bsik-dmbtr * -1.
+        ELSE.
+          gs_final-bal_amt =
+            gs_final-bal_amt + gs_bsik-dmbtr.
+        ENDIF.
+
+      WHEN '0000117005'.
+        IF gs_bsik-shkzg = 'H'.
+          gs_final-bal_amt =
+            gs_final-bal_amt + gs_bsik-dmbtr * -1.
+        ELSE.
+          gs_final-bal_amt =
+            gs_final-bal_amt + gs_bsik-dmbtr.
+        ENDIF.
+
+      WHEN '0000117006'.
+        IF gs_bsik-shkzg = 'H'.
+          gs_final-bal_amt =
+            gs_final-bal_amt + gs_bsik-dmbtr * -1.
+        ELSE.
+          gs_final-bal_amt =
+            gs_final-bal_amt + gs_bsik-dmbtr.
+        ENDIF.
+
+      WHEN '0000117007'.
+        IF gs_bsik-shkzg = 'H'.
+          gs_final-bal_amt =
+            gs_final-bal_amt + gs_bsik-dmbtr * -1.
+        ELSE.
+          gs_final-bal_amt =
+            gs_final-bal_amt + gs_bsik-dmbtr.
+        ENDIF.
+
+      WHEN '0000117008'.
+        IF gs_bsik-shkzg = 'H'.
+          gs_final-bal_amt =
+            gs_final-bal_amt + gs_bsik-dmbtr * -1.
+        ELSE.
+          gs_final-bal_amt =
+            gs_final-bal_amt + gs_bsik-dmbtr.
+        ENDIF.
+
+      WHEN '0000117009'.
+        IF gs_bsik-shkzg = 'H'.
+          gs_final-bal_amt =
+            gs_final-bal_amt + gs_bsik-dmbtr * -1.
+        ELSE.
+          gs_final-bal_amt =
+            gs_final-bal_amt + gs_bsik-dmbtr.
+        ENDIF.
+
+      WHEN '0000117010'.
+        IF gs_bsik-shkzg = 'H'.
+          gs_final-bal_amt =
+            gs_final-bal_amt + gs_bsik-dmbtr * -1.
+        ELSE.
+          gs_final-bal_amt =
+            gs_final-bal_amt + gs_bsik-dmbtr.
+        ENDIF.
+
+      WHEN '0000117001'.
+        IF gs_bsik-shkzg = 'H'.
+          gs_final-bal_amt1 =
+            gs_final-bal_amt1 + gs_bsik-dmbtr * -1.
+        ELSE.
+          gs_final-bal_amt1 =
+            gs_final-bal_amt1 + gs_bsik-dmbtr.
+        ENDIF.
+
+      WHEN '0000117021'.
+        IF gs_bsik-shkzg = 'H'.
+          gs_final-bal_amt =
+            gs_final-bal_amt + gs_bsik-dmbtr * -1.
+        ELSE.
+          gs_final-bal_amt =
+            gs_final-bal_amt + gs_bsik-dmbtr.
+        ENDIF.
+
+      WHEN '0000117011'.
+        IF gs_bsik-shkzg = 'H'.
+          gs_final-bal_amt =
+            gs_final-bal_amt + gs_bsik-dmbtr.
+        ELSE.
+          gs_final-bal_amt =
+            gs_final-bal_amt + gs_bsik-dmbtr * -1.
+        ENDIF.
+
+      WHEN '0000117022'.
+        IF gs_bsik-shkzg = 'H'.
+          gs_final-bal_amt1 =
+            gs_final-bal_amt1 + gs_bsik-dmbtr * -1.
+        ELSE.
+          gs_final-bal_amt1 =
+            gs_final-bal_amt1 + gs_bsik-dmbtr.
+        ENDIF.
+
+    ENDCASE.
+
+  ENDLOOP.
+
+  MOVE-CORRESPONDING gs_t_hrmast TO gs_final.
+
+  gs_final-bal_tot = gs_final-bal_amt + gs_final-bal_amt1.
+
+  IF gs_final-bal_amt < 0 OR gs_final-bal_amt1 < 0.
+    APPEND gs_final TO gt_final.
+  ENDIF.
+
+  "gs_final-bal_tot   - balance
+
+
+
+ENDFORM.
