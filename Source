@@ -115,7 +115,6 @@ FUNCTION zta_essmss_pf_loan .
         gs_pf_ess_main-zstatus      = gs_main1-zstatus .
       ENDIF.
       IF gs_pf_ess_main-zstatus_id = '99'.
-        "Ajay Please write the code here and send message flag 'S' or 'E' and  success message or error message
         gs_pf_ess_main-zpayment_date = sy-datum.  " to be confirmed the date as user input or approved date
       ENDIF.
       APPEND gs_pf_ess_main  TO gt_main .
