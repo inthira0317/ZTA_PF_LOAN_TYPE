@@ -3,7 +3,7 @@
 > This document explains the supplied implementation of the PF Loan ESS
 > function module. The code is reproduced in logical sections so that
 > each operation can be understood. It is based on the source supplied
-> for this documentation; it is not a claim that the program has been
+> for this documentation; it is  a claim that the program has been
 > syntax-checked or executed in an SAP system.
 
 
